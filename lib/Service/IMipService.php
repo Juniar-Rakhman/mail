@@ -21,7 +21,8 @@ use OCP\Calendar\IManager;
 use Psr\Log\LoggerInterface;
 use function array_filter;
 
-class IMipService {
+class IMipService
+{
 	private AccountService $accountService;
 	private IManager $calendarManager;
 	private LoggerInterface $logger;
@@ -45,7 +46,8 @@ class IMipService {
 		$this->messageMapper = $messageMapper;
 	}
 
-	public function process(): void {
+	public function process(): void
+	{
 		$messages = $this->messageMapper->findIMipMessagesAscending();
 		if ($messages === []) {
 			$this->logger->debug('No iMIP messages to process.');
@@ -57,19 +59,19 @@ class IMipService {
 		// and JOIN with accounts table
 		// although this might not make much of a difference
 		// since there are very few messages to process
-		$mailboxIds = array_unique(array_map(static fn (Message $message) => $message->getMailboxId(), $messages));
+		$mailboxIds = array_unique(array_map(static fn(Message $message) => $message->getMailboxId(), $messages));
 
 		$mailboxes = array_map(function (int $mailboxId) {
 			try {
 				return $this->mailboxMapper->findById($mailboxId);
-			} catch (DoesNotExistException|ServiceException $e) {
+			} catch (DoesNotExistException | ServiceException $e) {
 				return null;
 			}
 		}, $mailboxIds);
 		$existingMailboxes = array_filter($mailboxes);
 
 		// Collect all accounts in memory
-		$accountIds = array_unique(array_map(static fn (Mailbox $mailbox) => $mailbox->getAccountId(), $existingMailboxes));
+		$accountIds = array_unique(array_map(static fn(Mailbox $mailbox) => $mailbox->getAccountId(), $existingMailboxes));
 
 		$accounts = array_combine($accountIds, array_map(function (int $accountId) {
 			try {
@@ -82,7 +84,7 @@ class IMipService {
 		foreach ($existingMailboxes as $mailbox) {
 			/** @var Account $account */
 			$account = $accounts[$mailbox->getAccountId()];
-			$filteredMessages = array_filter($messages, static fn ($message) => $message->getMailboxId() === $mailbox->getId());
+			$filteredMessages = array_filter($messages, static fn($message) => $message->getMailboxId() === $mailbox->getId());
 
 			if ($filteredMessages === []) {
 				continue;
@@ -90,7 +92,8 @@ class IMipService {
 
 			// Check for accounts or mailboxes that no longer exist,
 			// no processing for drafts, sent items, junk or archive
-			if ($account === null
+			if (
+				$account === null
 				|| $account->getMailAccount()->getArchiveMailboxId() === $mailbox->getId()
 				|| $account->getMailAccount()->getSnoozeMailboxId() === $mailbox->getId()
 				|| $account->getMailAccount()->getTrashMailboxId() === $mailbox->getId()
@@ -107,7 +110,7 @@ class IMipService {
 			}
 
 			try {
-				$imapMessages = $this->mailManager->getImapMessagesForScheduleProcessing($account, $mailbox, array_map(static fn ($message) => $message->getUid(), $filteredMessages));
+				$imapMessages = $this->mailManager->getImapMessagesForScheduleProcessing($account, $mailbox, array_map(static fn($message) => $message->getUid(), $filteredMessages));
 			} catch (ServiceException $e) {
 				$this->logger->error('Could not get IMAP messages form IMAP server', ['exception' => $e]);
 				continue;
@@ -118,7 +121,7 @@ class IMipService {
 
 			foreach ($filteredMessages as $message) {
 				/** @var IMAPMessage $imapMessage */
-				$imapMessage = current(array_filter($imapMessages, static fn (IMAPMessage $imapMessage) => $message->getUid() === $imapMessage->getUid()));
+				$imapMessage = current(array_filter($imapMessages, static fn(IMAPMessage $imapMessage) => $message->getUid() === $imapMessage->getUid()));
 				if (empty($imapMessage->scheduling)) {
 					// No scheduling info, maybe the DB is wrong
 					$message->setImipError(true);
@@ -133,6 +136,12 @@ class IMipService {
 
 				foreach ($imapMessage->scheduling as $schedulingInfo) { // an IMAP message could contain more than one iMIP object
 					if ($schedulingInfo['method'] === 'REQUEST') {
+						$this->logger->debug('JUNIAR - iMIP REQUEST contents', [
+							'contents' => $schedulingInfo['contents'],
+							'sender' => $sender,
+							'recipient' => $recipient,
+							'principalUri' => $principalUri,
+						]);
 						$processed = $this->calendarManager->handleIMipRequest($principalUri, $sender, $recipient, $schedulingInfo['contents']);
 						$message->setImipProcessed($processed);
 						$message->setImipError(!$processed);
