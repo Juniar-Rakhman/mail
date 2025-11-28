@@ -48,6 +48,8 @@ class IMipService
 
 	public function process(): void
 	{
+		$this->logger->('JUN: Starting iMIP message processing');
+
 		$messages = $this->messageMapper->findIMipMessagesAscending();
 		if ($messages === []) {
 			$this->logger->debug('No iMIP messages to process.');
