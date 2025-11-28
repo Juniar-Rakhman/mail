@@ -7,6 +7,25 @@ declare(strict_types=1);
  * SPDX-License-Identifier: AGPL-3.0-or-later
  */
 
+/**
+ * Nextcloud Mail iMIP Service - PARTIALLY IMPLEMENTED
+ * 
+ * This service handles iMIP (iCalendar Message-based Interoperability Protocol) messages
+ * for automatic calendar scheduling. However, the implementation is INCOMPLETE:
+ * 
+ * TODO: Only processes messages with proper iMIP method parameter (REQUEST/REPLY/CANCEL)
+ * TODO: Does NOT process regular ICS attachments from external calendar systems
+ * TODO: Missing support for external calendar invitations sent as regular attachments
+ * TODO: No fallback processing for ICS files without method parameter
+ * TODO: Limited to MIME parts with method= parameter, missing many real-world invitations
+ * 
+ * The gap: External systems (Google Calendar, Outlook, etc.) often send ICS files as
+ * regular attachments without proper iMIP formatting. These are currently ignored and
+ * require manual user interaction to import.
+ * 
+ * See also: ImapMessageFetcher.php where external ICS attachments are detected but not processed
+ */
+
 namespace OCA\Mail\Service;
 
 use OCA\Mail\Account;
@@ -48,11 +67,13 @@ class IMipService
 
 	public function process(): void
 	{
-		$this->logger->('JUN: Starting iMIP message processing');
-
+		// TODO: This only processes internal iMIP messages with proper method parameter
+		// TODO: Add processing for external ICS attachments (see ImapMessageFetcher logs)
+		$this->logger->debug('JUN: Starting iMIP message processing (internal calendar invitations)');
 		$messages = $this->messageMapper->findIMipMessagesAscending();
+		$this->logger->debug('JUN: Found ' . count($messages) . ' iMIP messages to process (internal calendar invitations)');
 		if ($messages === []) {
-			$this->logger->debug('No iMIP messages to process.');
+			$this->logger->debug('JUN: No iMIP messages to process (internal calendar invitations)');
 			return;
 		}
 
@@ -125,7 +146,9 @@ class IMipService
 				/** @var IMAPMessage $imapMessage */
 				$imapMessage = current(array_filter($imapMessages, static fn(IMAPMessage $imapMessage) => $message->getUid() === $imapMessage->getUid()));
 				if (empty($imapMessage->scheduling)) {
-					// No scheduling info, maybe the DB is wrong
+					// TODO: This message was flagged as iMIP but has no scheduling data
+					// TODO: Could this be an external ICS attachment that was misclassified?
+					// TODO: Consider fallback processing for ICS attachments without method parameter
 					$message->setImipError(true);
 					continue;
 				}
@@ -138,22 +161,51 @@ class IMipService
 
 				foreach ($imapMessage->scheduling as $schedulingInfo) { // an IMAP message could contain more than one iMIP object
 					if ($schedulingInfo['method'] === 'REQUEST') {
-						$this->logger->debug('JUNIAR - iMIP REQUEST contents', [
-							'contents' => $schedulingInfo['contents'],
+						$this->logger->debug('JUN: Processing internal iMIP REQUEST', [
 							'sender' => $sender,
 							'recipient' => $recipient,
 							'principalUri' => $principalUri,
+							'messageId' => $message->getId(),
 						]);
 						$processed = $this->calendarManager->handleIMipRequest($principalUri, $sender, $recipient, $schedulingInfo['contents']);
+						$this->logger->debug('JUN: Internal iMIP REQUEST processed', [
+							'processed' => $processed,
+							'sender' => $sender,
+							'recipient' => $recipient,
+						]);
 						$message->setImipProcessed($processed);
 						$message->setImipError(!$processed);
 					} elseif ($schedulingInfo['method'] === 'REPLY') {
+						$this->logger->debug('JUN: Processing internal iMIP REPLY', [
+							'sender' => $sender,
+							'recipient' => $recipient,
+							'principalUri' => $principalUri,
+							'messageId' => $message->getId(),
+						]);
 						$processed = $this->calendarManager->handleIMipReply($principalUri, $sender, $recipient, $schedulingInfo['contents']);
+						$this->logger->debug('JUN: Internal iMIP REPLY processed', [
+							'processed' => $processed,
+							'sender' => $sender,
+							'recipient' => $recipient,
+						]);
 						$message->setImipProcessed($processed);
 						$message->setImipError(!$processed);
 					} elseif ($schedulingInfo['method'] === 'CANCEL') {
 						$replyTo = $imapMessage->getReplyTo()->first()?->getEmail();
+						$this->logger->debug('JUN: Processing internal iMIP CANCEL', [
+							'sender' => $sender,
+							'replyTo' => $replyTo,
+							'recipient' => $recipient,
+							'principalUri' => $principalUri,
+							'messageId' => $message->getId(),
+						]);
 						$processed = $this->calendarManager->handleIMipCancel($principalUri, $sender, $replyTo, $recipient, $schedulingInfo['contents']);
+						$this->logger->debug('JUN: Internal iMIP CANCEL processed', [
+							'processed' => $processed,
+							'sender' => $sender,
+							'replyTo' => $replyTo,
+							'recipient' => $recipient,
+						]);
 						$message->setImipProcessed($processed);
 						$message->setImipError(!$processed);
 					}

@@ -7,6 +7,29 @@ declare(strict_types=1);
  * SPDX-License-Identifier: AGPL-3.0-or-later
  */
 
+/**
+ * IMAP Message Fetcher - CALENDAR PROCESSING GAP
+ * 
+ * This class detects both iMIP messages and external ICS attachments, but only
+ * processes iMIP messages. External ICS attachments are logged but IGNORED:
+ * 
+ * TODO: External ICS attachments (lines ~320-330) are detected but not processed
+ * TODO: Missing automatic calendar updates for external calendar invitations
+ * TODO: No integration with IMipService for external ICS processing
+ * TODO: Regular ICS attachments require manual user interaction (see MessagesController)
+ * 
+ * The Problem: External systems (Google Calendar, Outlook, etc.) send ICS files
+ * as regular attachments without method= parameter. These are detected and logged
+ * but never processed for automatic calendar updates.
+ * 
+ * Current Flow:
+ * 1. External ICS detected → logged as "external ICS attachment (not iMIP)"
+ * 2. Attachment stored → shown in UI → requires manual user click to import
+ * 3. No automatic calendar update → user misses invitation changes
+ * 
+ * Missing: Bridge between external ICS detection and automatic calendar processing
+ */
+
 namespace OCA\Mail\IMAP;
 
 use Horde_Imap_Client_Base;
@@ -19,6 +42,7 @@ use Horde_Imap_Client_Ids;
 use Horde_ListHeaders;
 use Horde_Mime_Exception;
 use Horde_Mime_Headers;
+use Psr\Log\LoggerInterface;
 use Horde_Mime_Part;
 use OCA\Mail\AddressList;
 use OCA\Mail\Exception\ServiceException;
@@ -39,6 +63,7 @@ class ImapMessageFetcher {
 	private Html $htmlService;
 	private SmimeService $smimeService;
 	private PhishingDetectionService $phishingDetectionService;
+	private LoggerInterface $logger;
 	private string $userId;
 
 	private bool $runPhishingCheck = false;
@@ -73,6 +98,7 @@ class ImapMessageFetcher {
 		SmimeService $smimeService,
 		private Converter $converter,
 		PhishingDetectionService $phishingDetectionService,
+		LoggerInterface $logger,
 	) {
 		$this->uid = $uid;
 		$this->mailbox = $mailbox;
@@ -81,6 +107,7 @@ class ImapMessageFetcher {
 		$this->htmlService = $htmlService;
 		$this->smimeService = $smimeService;
 		$this->phishingDetectionService = $phishingDetectionService;
+		$this->logger = $logger;
 	}
 
 
@@ -310,15 +337,41 @@ class ImapMessageFetcher {
 					'cid' => $p->getContentId(),
 					'disposition' => $p->getDisposition()
 				];
+
+				// TODO: CRITICAL GAP - External ICS attachments detected but NOT processed
+				// TODO: These should be automatically processed for calendar updates
+				// TODO: Currently requires manual user interaction (see MessagesController)
+				// TODO: Missing integration with IMipService for external ICS processing
+				if (in_array(strtolower($p->getType()), ['text/calendar', 'application/ics']) && 
+					!isset($allContentTypeParameters['method'])) {
+					$this->logger->debug('JUN: Detected external ICS attachment (not iMIP) - CALENDAR UPDATE MISSED', [
+						'fileName' => $p->getName(),
+						'mime' => $p->getType(),
+						'messageId' => $this->uid,
+						'mailbox' => $this->mailbox,
+						'size' => $p->getBytes(),
+						'warning' => 'External ICS attachment will not be processed automatically - user must manually import',
+					]);
+				}
 			}
 
-			// return if this is an event attachment only
-			// the method parameter determines if this is a iMIP message
+			// TODO: This return statement exits processing for external ICS attachments
+			// TODO: External ICS attachments without method parameter are ignored here
+			// TODO: Should continue processing to extract calendar data for automatic updates
+			// TODO: The method parameter check is too restrictive for real-world usage
 			if (!isset($allContentTypeParameters['method'])) {
+				// TODO: Instead of returning, should process external ICS attachments
+				// TODO: Extract calendar data and pass to calendar processing system
 				return;
 			}
 
 			if (in_array(strtoupper($allContentTypeParameters['method']), ['REQUEST', 'REPLY', 'CANCEL'])) {
+				$this->logger->debug('JUN: Detected internal iMIP message', [
+					'method' => strtoupper($allContentTypeParameters['method']),
+					'messageId' => $this->uid,
+					'mailbox' => $this->mailbox,
+					'fileName' => $p->getName(),
+				]);
 				$this->scheduling[] = [
 					'id' => $p->getMimeId(),
 					'messageId' => $this->uid,
