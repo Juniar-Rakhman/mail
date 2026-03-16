@@ -188,8 +188,10 @@ class IMipService {
 					$message->setImipProcessed(true);
 					$message->setImipError(true);
 
+					$affectedUsers = [$account->getEmail()];
 					try {
 						$this->sendErrorNotification($account, $mailbox, $message, $imapMessage);
+						$this->sendErrorMailNotification($account, $mailbox, $message, $imapMessage, $sender, $affectedUsers, $e);
 					} catch (Throwable $notificationException) {
 						$this->logger->error('Failed to send error notification', [
 							'exception' => $notificationException,
@@ -229,4 +231,134 @@ class IMipService {
 
 		$this->notificationManager->notify($notification);
 	}
+
+	/**
+	 * Send error notification email when iMIP processing fails
+	 */
+	private function sendErrorMailNotification(
+		Account $account,
+		Mailbox $mailbox,
+		Message $message,
+		IMAPMessage $imapMessage,
+		string $sender,
+		array $affectedUsers,
+		Throwable $exception,
+	): void {
+		// Fetch the raw message content from IMAP
+		$client = $this->imapClientFactory->getClient($account);
+		try {
+			$rawMessage = $this->imapMessageMapper->getFullText(
+				$client,
+				$mailbox->getName(),
+				$message->getUid(),
+				$account->getUserId(),
+				false // Don't decrypt, send raw message
+			);
+
+			if ($rawMessage === null) {
+				throw new ServiceException('Could not fetch raw message content');
+			}
+		} finally {
+			$client->logout();
+		}
+
+		$localMessage = new LocalMessage();
+		$localMessage->setType(LocalMessage::TYPE_OUTGOING);
+		$localMessage->setAccountId($account->getId());
+		$localMessage->setSubject('[ERROR] Calendar invitation processing failed: ' . ($imapMessage->getSubject() ?? 'No Subject'));
+		$localMessage->setBodyHtml(null);
+		$localMessage->setBodyPlain($this->buildErrorNotificationBody($account, $message, $imapMessage, $sender, $affectedUsers, $exception));
+		$localMessage->setHtml(false);
+
+		// Build recipient list - include all affected users
+		$recipients = [];
+		foreach ($affectedUsers as $userEmail) {
+			$recipient = new Recipient();
+			$recipient->setType(Recipient::TYPE_TO);
+			$recipient->setEmail($userEmail);
+			$recipient->setLabel($userEmail);
+			$recipients[] = $recipient;
+		}
+		$localMessage->setRecipients($recipients);
+
+		// Create attachment from the raw message
+		$attachment = $this->attachmentService->addFileFromString(
+			$account->getUserId(),
+			$this->sanitizeFilename($imapMessage->getSubject() ?? 'original-message') . '.eml',
+			'message/rfc822',
+			$rawMessage
+		);
+		$localMessage->setAttachments([$attachment]);
+
+		// Send using the account's SMTP settings
+		$this->mailTransmission->sendMessage($account, $localMessage);
+
+		$this->logger->info('Error notification sent for failed iMIP message', [
+			'messageId' => $message->getId(),
+			'from' => $account->getEmail(),
+			'recipients' => $affectedUsers,
+			'subject' => $imapMessage->getSubject(),
+		]);
+	}
+
+	/**
+	 * Build the body of the error notification email
+	 *
+	 * @param Account $account The account that received the message
+	 * @param Message $message The message entity
+	 * @param IMAPMessage $imapMessage The IMAP message
+	 * @param string $sender The sender email address
+	 * @param array $affectedUsers List of affected user emails
+	 * @param Throwable $exception The exception that caused the error
+	 * @return string The notification body
+	 */
+	private function buildErrorNotificationBody(Account $account, Message $message, IMAPMessage $imapMessage, string $sender, array $affectedUsers, Throwable $exception): string {
+		$schedulingMethods = [];
+		foreach ($imapMessage->scheduling as $schedulingInfo) {
+			$schedulingMethods[] = $schedulingInfo['method'] ?? 'UNKNOWN';
+		}
+
+		$lines = [
+			'Calendar Invitation Processing Error',
+			'====================================',
+			'',
+			'We were unable to automatically process a calendar invitation in your email.',
+			'',
+			'WHAT YOU NEED TO DO:',
+			'Please manually add this event to your calendar.',
+			'',
+			'The original email with the calendar invitation is attached to this message.',
+			'You can open the attached .eml file and add the event to your calendar from there.',
+			'',
+			'If you have any questions, please contact the system administrator.',
+			'',
+			'====================================',
+			'',
+			'Email Details:',
+			'- Subject: ' . ($imapMessage->getSubject() ?? '(no subject)'),
+			'- From: ' . $sender,
+			'- To: ' . $account->getEmail(),
+			'- Date: ' . $imapMessage->getSentDate()->format('Y-m-d H:i:s'),
+			'',
+			'Calendar Event Type:',
+			'- Method: ' . implode(', ', $schedulingMethods),
+			'',
+			'Timestamp: ' . date('Y-m-d H:i:s'),
+			'',
+			'Technical Details:',
+			'- Message ID: ' . $message->getId(),
+			'- Account: ' . $account->getEmail(),
+			'- Recipients notified: ' . implode(', ', $affectedUsers),
+			'- Error: ' . $exception->getMessage(),
+			'',
+			'',
+			'====================================',
+			'',
+			'This is an automated message please do not reply.',
+			'',
+	];
+
+		return implode("\n", $lines);
+	}
+
 }
